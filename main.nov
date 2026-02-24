@@ -1,0 +1,8 @@
+// ---------------------------------------------------------------------------
+// window - macOS window manager (WebKit via C helper over UNIX socket)
+// macOS only — includes window_manager binary for Apple Silicon.
+// ---------------------------------------------------------------------------
+
+module window_main;
+
+import darwin_arm64;
