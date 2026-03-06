@@ -1,0 +1,126 @@
+// Auto-generated test file. Run on the target platform or in VM/Docker.
+
+module window_tests_darwin_arm64;
+
+import main;
+
+fn test_pass(name: str) -> void {
+    print_raw("  [PASS] " + name + "\n");
+}
+
+fn test_fail(name: str, detail: str) -> void {
+    print_raw("  [FAIL] " + name + ": " + detail + "\n");
+}
+
+fn assert_eq_i32(name: str, got: i32, expected: i32) -> i32 {
+    if (got == expected) { test_pass(name); return 0; }
+    test_fail(name, "got " + i32_to_str(got) + ", expected " + i32_to_str(expected));
+    return 1;
+}
+
+fn assert_eq_i64(name: str, got: i64, expected: i64) -> i32 {
+    if (got == expected) { test_pass(name); return 0; }
+    test_fail(name, "got " + i64_to_str(got) + ", expected " + i64_to_str(expected));
+    return 1;
+}
+
+fn assert_eq_str(name: str, got: str, expected: str) -> i32 {
+    if (str_equals(got, expected)) { test_pass(name); return 0; }
+    test_fail(name, "got '" + got + "', expected '" + expected + "'");
+    return 1;
+}
+
+fn assert_true(name: str, val: bool) -> i32 {
+    if (val) { test_pass(name); return 0; }
+    test_fail(name, "expected true");
+    return 1;
+}
+
+fn assert_gt_i32(name: str, val: i32, threshold: i32) -> i32 {
+    if (val > threshold) { test_pass(name); return 0; }
+    test_fail(name, "expected > " + i32_to_str(threshold));
+    return 1;
+}
+
+fn assert_gt_i64(name: str, val: i64, threshold: i64) -> i32 {
+    if (val > threshold) { test_pass(name); return 0; }
+    test_fail(name, "expected > " + i64_to_str(threshold));
+    return 1;
+}
+
+fn assert_gte_i32(name: str, val: i32, threshold: i32) -> i32 {
+    if (val >= threshold) { test_pass(name); return 0; }
+    test_fail(name, "expected >= " + i32_to_str(threshold) + ", got " + i32_to_str(val));
+    return 1;
+}
+
+fn assert_neq_u64(name: str, val: u64, not_val: u64) -> i32 {
+    if (val != not_val) { test_pass(name); return 0; }
+    test_fail(name, "expected != given value");
+    return 1;
+}
+
+fn main(argc: i32, argv: u64) -> i32 {
+    let fails: i32 = 0;
+    print_raw("=== window tests (darwin_arm64) ===\n");
+
+    // ── wm_to_u8 ──
+    print_raw("\n--- Helpers ---\n");
+    fails = fails + assert_eq_i32("wm_to_u8(65)", wm_to_u8(65), 65);
+    fails = fails + assert_eq_i32("wm_to_u8(256)", wm_to_u8(256), 0);
+    fails = fails + assert_eq_i32("wm_to_u8(-1)", wm_to_u8(-1), 255);
+
+    // ── wm_escape_arg / wm_unescape_arg ──
+    print_raw("\n--- Escape ---\n");
+    fails = fails + assert_eq_str("escape plain", wm_escape_arg("hello"), "hello");
+    fails = fails + assert_eq_str("escape backslash", wm_escape_arg("a\\b"), "a\\\\b");
+    fails = fails + assert_eq_str("escape newline", wm_escape_arg("a\nb"), "a\\nb");
+    fails = fails + assert_eq_str("unescape plain", wm_unescape_arg("hello"), "hello");
+    fails = fails + assert_eq_str("unescape backslash", wm_unescape_arg("a\\\\b"), "a\\b");
+    fails = fails + assert_eq_str("unescape newline", wm_unescape_arg("a\\nb"), "a\nb");
+
+    // ── wm_escape_js ──
+    print_raw("\n--- JS Escape ---\n");
+    fails = fails + assert_eq_str("js escape quote", wm_escape_js("it's"), "it\\'s");
+    fails = fails + assert_eq_str("js escape backslash", wm_escape_js("a\\b"), "a\\\\b");
+
+    // ── wm_parse_port ──
+    print_raw("\n--- Parse Port ---\n");
+    fails = fails + assert_eq_i32("parse PORT 8080", wm_parse_port("PORT 8080"), 8080);
+    fails = fails + assert_eq_i32("parse PORT 3000", wm_parse_port("PORT 3000"), 3000);
+    fails = fails + assert_eq_i32("parse invalid", wm_parse_port("ERR"), -1);
+
+    // ── wm_syscall0 (assembly: mov + syscall + getreg) ──
+    print_raw("\n--- Syscall wrappers ---\n");
+    let pid_raw: u64 = wm_syscall0(20);  // SYS_getpid
+    fails = fails + assert_true("wm_syscall0 getpid > 0", pid_raw > 0);
+
+    // ── wm_socket (assembly: syscall socket AF_UNIX) ──
+    print_raw("\n--- Unix Socket ---\n");
+    let sock: i32 = wm_socket();
+    fails = fails + assert_true("wm_socket >= 0", sock >= 0);
+    if (sock >= 0) {
+        wm_close(sock);
+        print_raw("  [PASS] wm_close\n");
+    }
+
+    // ── wm_sleep_ms (assembly: syscall poll) ──
+    print_raw("\n--- Sleep ---\n");
+    let before: i64 = get_time_ns();
+    wm_sleep_ms(30);
+    let after: i64 = get_time_ns();
+    let elapsed: i64 = (after - before) / 1000000;
+    fails = fails + assert_true("wm_sleep_ms(30) >= 20ms", elapsed >= 20);
+
+    // NOTE: wm_connect, wm_send_cmd, wm_recv_line, etc. require a running
+    // window_manager process — tested via integration, not unit tests.
+
+    // ── Summary ──
+    print_raw("\n");
+    if (fails > 0) {
+        print_raw(i32_to_str(fails) + " test(s) FAILED\n");
+        return 1;
+    }
+    print_raw("All tests PASSED\n");
+    return 0;
+}
