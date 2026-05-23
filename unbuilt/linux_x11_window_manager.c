@@ -158,6 +158,8 @@ static struct rect_cmd g_rects[4096];
 static int g_rect_count = 0;
 static int g_running = 1;
 static int g_client_fd = -1;
+static char g_cmd_buf[8192];
+static size_t g_cmd_len = 0;
 
 static int send_line(const char *line) {
     if (g_client_fd < 0) {
@@ -314,6 +316,51 @@ static void process_command(const char *line) {
     send_line("ERR\n");
 }
 
+static void process_client_bytes(const char *data, size_t len) {
+    if (len == 0) {
+        return;
+    }
+
+    if (g_cmd_len + len >= sizeof(g_cmd_buf)) {
+        g_cmd_len = 0;
+    }
+
+    if (len >= sizeof(g_cmd_buf)) {
+        data += len - (sizeof(g_cmd_buf) - 1);
+        len = sizeof(g_cmd_buf) - 1;
+    }
+
+    memcpy(g_cmd_buf + g_cmd_len, data, len);
+    g_cmd_len += len;
+    g_cmd_buf[g_cmd_len] = '\0';
+
+    size_t line_start = 0;
+    for (size_t i = 0; i < g_cmd_len; i++) {
+        if (g_cmd_buf[i] != '\n') {
+            continue;
+        }
+
+        g_cmd_buf[i] = '\0';
+        if (i > line_start && g_cmd_buf[i - 1] == '\r') {
+            g_cmd_buf[i - 1] = '\0';
+        }
+        process_command(g_cmd_buf + line_start);
+        line_start = i + 1;
+    }
+
+    if (line_start == 0) {
+        return;
+    }
+
+    if (line_start < g_cmd_len) {
+        memmove(g_cmd_buf, g_cmd_buf + line_start, g_cmd_len - line_start);
+        g_cmd_len -= line_start;
+    } else {
+        g_cmd_len = 0;
+    }
+    g_cmd_buf[g_cmd_len] = '\0';
+}
+
 static int open_server(int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
@@ -339,6 +386,9 @@ static int open_server(int port) {
 
 int main(int argc, char **argv) {
     const char *title = "Novus Window";
+    const char *display_name = NULL;
+    const char *xauthority = NULL;
+    const char *home_dir = NULL;
     int port = 47832;
 
     signal(SIGPIPE, SIG_IGN);
@@ -348,11 +398,27 @@ int main(int argc, char **argv) {
             port = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--title") == 0 && i + 1 < argc) {
             title = argv[++i];
+        } else if (strcmp(argv[i], "--display") == 0 && i + 1 < argc) {
+            display_name = argv[++i];
+        } else if (strcmp(argv[i], "--xauthority") == 0 && i + 1 < argc) {
+            xauthority = argv[++i];
+        } else if (strcmp(argv[i], "--home") == 0 && i + 1 < argc) {
+            home_dir = argv[++i];
         } else if (strcmp(argv[i], "--width") == 0 && i + 1 < argc) {
             g_width = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--height") == 0 && i + 1 < argc) {
             g_height = atoi(argv[++i]);
         }
+    }
+
+    if (display_name && display_name[0] != '\0') {
+        setenv("DISPLAY", display_name, 1);
+    }
+    if (xauthority && xauthority[0] != '\0') {
+        setenv("XAUTHORITY", xauthority, 1);
+    }
+    if (home_dir && home_dir[0] != '\0') {
+        setenv("HOME", home_dir, 1);
     }
 
     g_display = XOpenDisplay(NULL);
@@ -420,14 +486,7 @@ int main(int argc, char **argv) {
             if (n <= 0) {
                 break;
             }
-            buf[n] = '\0';
-
-            char *saveptr = NULL;
-            char *line = strtok_r(buf, "\n", &saveptr);
-            while (line) {
-                process_command(line);
-                line = strtok_r(NULL, "\n", &saveptr);
-            }
+            process_client_bytes(buf, (size_t)n);
         }
     }
 
