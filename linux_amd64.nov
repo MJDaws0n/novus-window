@@ -1,23 +1,250 @@
 // ---------------------------------------------------------------------------
-// window/linux_amd64 - Linux X11 window helper over localhost TCP
+// window/linux_amd64 - in-process Linux X11 backend
 // ---------------------------------------------------------------------------
 
 module window_linux_amd64;
 
 import ../std;
-import ../net/main;
 import ../env/main;
 
-fn wm_default_port() -> i32 {
-    mov(rax, 39); // SYS_getpid
-    syscall();
-    let pid: i32 = u64_to_i32(getreg(rax));
-    return 42000 + (pid % 20000);
+fn to_u8(v: i32) -> i32 {
+    return ((v % 256) + 256) % 256;
 }
 
-fn wm_exe_default() -> str {
-    return "lib/window/window_manager_linux";
+fn pad4(n: i32) -> i32 {
+    let rem: i32 = n % 4;
+    if (rem == 0) { return 0; }
+    return 4 - rem;
 }
+
+fn make_zero_buf(size: i32) -> str {
+    let buf: str = make_buffer(size);
+    memset(ptr(buf), 0, size);
+    return buf;
+}
+
+fn write_u16_le(buf: str, off: i32, val: i32) -> void {
+    store8(ptr(buf) + i32_to_u64(off), to_u8(val));
+    store8(ptr(buf) + i32_to_u64(off + 1), to_u8(val / 256));
+}
+
+fn write_u16_be(buf: str, off: i32, val: i32) -> void {
+    store8(ptr(buf) + i32_to_u64(off), to_u8(val / 256));
+    store8(ptr(buf) + i32_to_u64(off + 1), to_u8(val));
+}
+
+fn write_u32_le(buf: str, off: i32, val: i32) -> void {
+    store8(ptr(buf) + i32_to_u64(off), to_u8(val));
+    store8(ptr(buf) + i32_to_u64(off + 1), to_u8(val / 256));
+    store8(ptr(buf) + i32_to_u64(off + 2), to_u8(val / 65536));
+    store8(ptr(buf) + i32_to_u64(off + 3), to_u8(val / 16777216));
+}
+
+fn read_u16_le(buf: str, off: i32) -> i32 {
+    return byte_at(buf, off) + (byte_at(buf, off + 1) * 256);
+}
+
+fn read_u16_be(buf: str, off: i32) -> i32 {
+    return (byte_at(buf, off) * 256) + byte_at(buf, off + 1);
+}
+
+fn read_u32_le(buf: str, off: i32) -> i32 {
+    return byte_at(buf, off) + (byte_at(buf, off + 1) * 256) + (byte_at(buf, off + 2) * 65536) + (byte_at(buf, off + 3) * 16777216);
+}
+
+fn syscall_result_i32() -> i32 {
+    let raw: i64 = u64_to_i64(getreg(rax));
+    if (raw < 0) {
+        return 0 - u64_to_i32(i64_to_u64(0 - raw));
+    }
+    return u64_to_i32(i64_to_u64(raw));
+}
+
+fn syscall_result_i64() -> i64 {
+    return u64_to_i64(getreg(rax));
+}
+
+fn sys_close(fd: i32) -> void {
+    mov(rax, 3);
+    mov(rdi, fd);
+    syscall();
+}
+
+fn sys_read(fd: i32, addr: u64, count: i32) -> i32 {
+    mov(rax, 0);
+    mov(rdi, fd);
+    mov(rsi, addr);
+    mov(rdx, count);
+    syscall();
+    return syscall_result_i32();
+}
+
+fn sys_write(fd: i32, addr: u64, count: i32) -> i32 {
+    mov(rax, 1);
+    mov(rdi, fd);
+    mov(rsi, addr);
+    mov(rdx, count);
+    syscall();
+    return syscall_result_i32();
+}
+
+fn x_file_open_read(path: str) -> i32 {
+    mov(rax, 2);
+    mov(rdi, path);
+    mov(rsi, 0);
+    mov(rdx, 0);
+    syscall();
+    return syscall_result_i32();
+}
+
+fn x_file_seek(fd: i32, offset: u64, whence: i32) -> i64 {
+    mov(rax, 8);
+    mov(rdi, fd);
+    mov(rsi, offset);
+    mov(rdx, whence);
+    syscall();
+    return syscall_result_i64();
+}
+
+fn x_file_size(fd: i32) -> i32 {
+    let cur: i64 = x_file_seek(fd, 0, 1);
+    if (cur < 0) { return -1; }
+    let end: i64 = x_file_seek(fd, 0, 2);
+    if (end < 0) { return -1; }
+    x_file_seek(fd, i64_to_u64(cur), 0);
+    return u64_to_i32(i64_to_u64(end));
+}
+
+fn x_read_file(path: str) -> str {
+    let fd: i32 = x_file_open_read(path);
+    if (fd < 0) { return ""; }
+    let sz: i32 = x_file_size(fd);
+    if (sz <= 0) {
+        sys_close(fd);
+        return "";
+    }
+    let buf: str = make_zero_buf(sz + 1);
+    let nr: i32 = sys_read(fd, ptr(buf), sz);
+    sys_close(fd);
+    if (nr <= 0) { return ""; }
+    return copy_bytes(ptr(buf), nr);
+}
+
+fn sock_socket(domain: i32, kind: i32) -> i32 {
+    mov(rax, 41);
+    mov(rdi, domain);
+    mov(rsi, kind);
+    mov(rdx, 0);
+    syscall();
+    return syscall_result_i32();
+}
+
+fn sock_connect(fd: i32, addr_ptr: u64, addr_len: i32) -> i32 {
+    mov(rax, 42);
+    mov(rdi, fd);
+    mov(rsi, addr_ptr);
+    mov(rdx, addr_len);
+    syscall();
+    return syscall_result_i32();
+}
+
+fn make_sockaddr_un(path: str) -> str {
+    let buf: str = make_zero_buf(110);
+    write_u16_le(buf, 0, 1);
+    let i: i32 = 0;
+    while (i < len(path) && i < 107) {
+        store8(ptr(buf) + i32_to_u64(2 + i), byte_at(path, i));
+        i = i + 1;
+    }
+    return buf;
+}
+
+fn write_all(fd: i32, data: str, count: i32) -> i32 {
+    let sent: i32 = 0;
+    while (sent < count) {
+        let nw: i32 = sys_write(fd, ptr(data) + i32_to_u64(sent), count - sent);
+        if (nw <= 0) { return -1; }
+        sent = sent + nw;
+    }
+    return sent;
+}
+
+fn read_exact(fd: i32, count: i32) -> str {
+    let out: str = make_zero_buf(count + 1);
+    let got: i32 = 0;
+    while (got < count) {
+        let nr: i32 = sys_read(fd, ptr(out) + i32_to_u64(got), count - got);
+        if (nr <= 0) { return ""; }
+        got = got + nr;
+    }
+    return out;
+}
+
+fn poll_x(timeout_ms: i32) -> i32 {
+    if (g_x_fd < 0) { return 0; }
+    let buf: str = make_zero_buf(8);
+    let buf_ptr: u64 = ptr(buf);
+    write_u32_le(buf, 0, g_x_fd);
+    write_u16_le(buf, 4, 1);
+    mov(rax, 7);
+    mov(rdi, buf_ptr);
+    mov(rsi, 1);
+    mov(rdx, timeout_ms);
+    syscall();
+    let rc: i32 = syscall_result_i32();
+    if (rc <= 0) { return 0; }
+    if ((read_u16_le(buf, 6) & 1) != 0) { return 1; }
+    return 0;
+}
+
+fn parse_display_num(display: str) -> i32 {
+    let colon: i32 = str_find(display, ":");
+    if (colon < 0) { return 0; }
+    let start: i32 = colon + 1;
+    let end: i32 = len(display);
+    let dot: i32 = str_find(substr(display, start), ".");
+    if (dot >= 0) {
+        end = start + dot;
+    }
+    return str_to_i32(substr_len(display, start, end - start));
+}
+
+fn display_socket_path(display: str) -> str {
+    return "/tmp/.X11-unix/X" + int_to_str(parse_display_num(display));
+}
+
+let g_display: str = ":0";
+let g_xauthority: str = "";
+let g_home: str = "";
+let g_title: str = "Novus Window";
+let g_width: i32 = 960;
+let g_height: i32 = 640;
+let g_input_mask: i32 = 0;
+let g_bg: i32 = 0x0012182a;
+let g_x_fd: i32 = -1;
+let g_root_window: i32 = 0;
+let g_root_visual: i32 = 0;
+let g_default_colormap: i32 = 0;
+let g_white_pixel: i32 = 0;
+let g_black_pixel: i32 = 0;
+let g_root_depth: i32 = 0;
+let g_window_id: i32 = 0;
+let g_gc_id: i32 = 0;
+let g_resource_base: i32 = 0;
+let g_resource_mask: i32 = 0;
+let g_resource_counter: i32 = 1;
+let g_atom_wm_protocols: i32 = 0;
+let g_atom_wm_delete_window: i32 = 0;
+let g_atom_net_wm_name: i32 = 0;
+let g_atom_utf8_string: i32 = 0;
+let g_rect_x: []i32 = [];
+let g_rect_y: []i32 = [];
+let g_rect_w: []i32 = [];
+let g_rect_h: []i32 = [];
+let g_rect_color: []i32 = [];
+let g_rect_count: i32 = 0;
+let g_drawing_frame: i32 = 0;
+let g_redraw_pending: i32 = 0;
 
 fn wm_input_left() -> i32 { return 1; }
 fn wm_input_right() -> i32 { return 2; }
@@ -33,121 +260,394 @@ fn wm_sleep_ms(ms: i32) -> void {
     syscall();
 }
 
-fn wm_send_line(fd: i32, line: str) -> i32 {
-    return net_write_line(fd, line);
+fn next_resource_id() -> i32 {
+    g_resource_counter = g_resource_counter + 1;
+    return g_resource_base | (g_resource_counter & g_resource_mask);
 }
 
-fn wm_recv_line(fd: i32) -> str {
-    return net_read_line(fd, 4096);
-}
-
-fn wm_send_cmd(fd: i32, cmd: str, arg: str) -> i32 {
-    if (len(arg) > 0) {
-        return wm_send_line(fd, cmd + " " + arg);
-    }
-    return wm_send_line(fd, cmd);
-}
-
-fn wm_trim_line(line: str) -> str {
-    let out: str = "";
-    let i: i32 = 0;
-    while (i < len(line)) {
-        if (line[i] == '\n' || line[i] == '\r') {
-            return out;
+fn read_xauthority_cookie(path: str, display_num: i32) -> str {
+    let data: str = x_read_file(path);
+    if (len(data) == 0) { return ""; }
+    let want_display: str = int_to_str(display_num);
+    let pos: i32 = 0;
+    while (pos + 12 <= len(data)) {
+        let family: i32 = read_u16_be(data, pos);
+        let addr_len: i32 = read_u16_be(data, pos + 2);
+        let addr_pos: i32 = pos + 4;
+        let disp_len_pos: i32 = addr_pos + addr_len;
+        if (disp_len_pos + 2 > len(data)) { return ""; }
+        let disp_len: i32 = read_u16_be(data, disp_len_pos);
+        let disp_pos: i32 = disp_len_pos + 2;
+        let name_len_pos: i32 = disp_pos + disp_len;
+        if (name_len_pos + 2 > len(data)) { return ""; }
+        let name_len: i32 = read_u16_be(data, name_len_pos);
+        let name_pos: i32 = name_len_pos + 2;
+        let value_len_pos: i32 = name_pos + name_len;
+        if (value_len_pos + 2 > len(data)) { return ""; }
+        let value_len: i32 = read_u16_be(data, value_len_pos);
+        let value_pos: i32 = value_len_pos + 2;
+        let next_pos: i32 = value_pos + value_len;
+        if (next_pos > len(data)) { return ""; }
+        let display_str: str = substr_len(data, disp_pos, disp_len);
+        let auth_name: str = substr_len(data, name_pos, name_len);
+        if ((family == 256 || family == 0 || family == 65535) && display_str == want_display && auth_name == "MIT-MAGIC-COOKIE-1") {
+            return substr_len(data, value_pos, value_len);
         }
-        out = out + line[i];
+        pos = next_pos;
+    }
+    return "";
+}
+
+fn x_connect() -> i32 {
+    let fd: i32 = sock_socket(1, 1);
+    if (fd < 0) { return -1; }
+    let path: str = display_socket_path(g_display);
+    let addr: str = make_sockaddr_un(path);
+    if (sock_connect(fd, ptr(addr), 110) != 0) {
+        sys_close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+fn x_send_setup(fd: i32, cookie: str) -> i32 {
+    let auth_name: str = "MIT-MAGIC-COOKIE-1";
+    let name_len: i32 = len(auth_name);
+    let data_len: i32 = len(cookie);
+    if (data_len == 0) { name_len = 0; }
+    let total: i32 = 12 + name_len + pad4(name_len) + data_len + pad4(data_len);
+    let packet: str = make_zero_buf(total);
+    store8(ptr(packet), to_u8(108));
+    write_u16_le(packet, 2, 11);
+    write_u16_le(packet, 4, 0);
+    write_u16_le(packet, 6, name_len);
+    write_u16_le(packet, 8, data_len);
+    let off: i32 = 12;
+    let i: i32 = 0;
+    while (i < name_len) {
+        store8(ptr(packet) + i32_to_u64(off + i), byte_at(auth_name, i));
         i = i + 1;
     }
-    return out;
+    let off2: i32 = off + name_len + pad4(name_len);
+    let j: i32 = 0;
+    while (j < data_len) {
+        store8(ptr(packet) + i32_to_u64(off2 + j), byte_at(cookie, j));
+        j = j + 1;
+    }
+    return write_all(fd, packet, total);
 }
 
-fn wm_line_has_prefix(line: str, prefix: str) -> bool {
-    if (len(line) < len(prefix)) { return false; }
-    return str_equals(substr_len(line, 0, len(prefix)), prefix);
+fn x_read_setup(fd: i32) -> i32 {
+    let header: str = read_exact(fd, 8);
+    if (byte_at(header, 0) != 1) { return -1; }
+    let payload_len: i32 = read_u16_le(header, 6) * 4;
+    if (payload_len < 40) { return -1; }
+    let payload: str = read_exact(fd, payload_len);
+    g_resource_base = read_u32_le(payload, 4);
+    g_resource_mask = read_u32_le(payload, 8);
+    let vendor_len: i32 = read_u16_le(payload, 16);
+    let roots_count: i32 = byte_at(payload, 20);
+    let formats_count: i32 = byte_at(payload, 21);
+    if (roots_count <= 0) { return -1; }
+    let screen_off: i32 = 32 + vendor_len + pad4(vendor_len) + (formats_count * 8);
+    if (screen_off + 40 > payload_len) { return -1; }
+    g_root_window = read_u32_le(payload, screen_off);
+    g_default_colormap = read_u32_le(payload, screen_off + 4);
+    g_white_pixel = read_u32_le(payload, screen_off + 8);
+    g_black_pixel = read_u32_le(payload, screen_off + 12);
+    g_root_visual = read_u32_le(payload, screen_off + 32);
+    g_root_depth = byte_at(payload, screen_off + 38);
+    return 0;
 }
 
-fn wm_parse_tail_i32(line: str, prefix: str) -> i32 {
-    if (!wm_line_has_prefix(line, prefix)) { return 0; }
-    return str_to_i32(substr_len(line, len(prefix), len(line) - len(prefix)));
+fn x_setup(fd: i32) -> i32 {
+    let cookie_path: str = g_xauthority;
+    if (len(cookie_path) == 0 && len(g_home) > 0) {
+        cookie_path = g_home + "/.Xauthority";
+    }
+    let cookie: str = read_xauthority_cookie(cookie_path, parse_display_num(g_display));
+    if (x_send_setup(fd, cookie) < 0) { return -1; }
+    return x_read_setup(fd);
 }
 
-fn wm_size(fd: i32) -> str {
-    wm_send_cmd(fd, "SIZE", "");
-    let line: str = wm_recv_line(fd);
-    if (!wm_line_has_prefix(line, "SIZE ")) { return ""; }
-    return substr_len(line, 5, len(line) - 5);
+fn x_read_message() -> str {
+    return read_exact(g_x_fd, 32);
 }
 
-fn wm_connect_port(port: i32) -> i32 {
-    return net_connect_local(port);
-}
-
-fn wm_quit_fd(fd: i32) -> void {
-    wm_send_cmd(fd, "QUIT", "");
-    wm_recv_line(fd);
-    net_close(fd);
-}
-
-fn wm_stop_stale_helper(port: i32) -> void {
-    let stale_fd: i32 = wm_connect_port(port);
-    if (stale_fd >= 0) {
-        wm_quit_fd(stale_fd);
-        wm_sleep_ms(100);
+fn x_pump_events() -> void {
+    while (poll_x(0) != 0) {
+        let pkt: str = x_read_message();
+        process_x_message(pkt);
     }
 }
 
-fn wm_spawn_linux(exe_path: str, title: str, port: i32, width: i32, height: i32) -> i32 {
-    let arg_port: str = "--port";
-    let arg_title: str = "--title";
-    let arg_width: str = "--width";
-    let arg_height: str = "--height";
-    let arg_display: str = "--display";
-    let arg_xauthority: str = "--xauthority";
-    let arg_home: str = "--home";
-    let port_str: str = int_to_str(port);
-    let width_str: str = int_to_str(width);
-    let height_str: str = int_to_str(height);
-    let display_str: str = wm_trim_line(getenv("DISPLAY"));
-    let xauthority_str: str = wm_trim_line(getenv("XAUTHORITY"));
-    let home_str: str = wm_trim_line(get_home_dir());
-    let argv: []u64 = [
-        ptr(exe_path),
-        ptr(arg_display), ptr(display_str),
-        ptr(arg_xauthority), ptr(xauthority_str),
-        ptr(arg_home), ptr(home_str),
-        ptr(arg_port), ptr(port_str),
-        ptr(arg_title), ptr(title),
-        ptr(arg_width), ptr(width_str),
-        ptr(arg_height), ptr(height_str),
-        0
-    ];
-    return spawn_execve(exe_path, argv);
+fn x_sync() -> void {
+    let req: str = make_zero_buf(4);
+    store8(ptr(req), to_u8(43));
+    write_u16_le(req, 2, 1);
+    write_all(g_x_fd, req, 4);
+    while (true) {
+        let pkt: str = x_read_message();
+        if (byte_at(pkt, 0) == 1) { return; }
+        let kind: i32 = byte_at(pkt, 0) & 127;
+        if (kind == 0) { return; }
+        process_x_message(pkt);
+    }
+}
+
+fn x_intern_atom(name: str) -> i32 {
+    let name_pad: i32 = pad4(len(name));
+    let total: i32 = 8 + len(name) + name_pad;
+    let req: str = make_zero_buf(total);
+    store8(ptr(req), to_u8(16));
+    write_u16_le(req, 2, total / 4);
+    write_u16_le(req, 4, len(name));
+    let i: i32 = 0;
+    while (i < len(name)) {
+        store8(ptr(req) + i32_to_u64(8 + i), byte_at(name, i));
+        i = i + 1;
+    }
+    write_all(g_x_fd, req, total);
+    while (true) {
+        let rep: str = x_read_message();
+        if (byte_at(rep, 0) == 1) { return read_u32_le(rep, 8); }
+        process_x_message(rep);
+    }
+    return 0;
+}
+
+fn x_change_property(window_id: i32, property_atom: i32, type_atom: i32, format_bits: i32, data: str, item_count: i32) -> void {
+    let data_pad: i32 = pad4(len(data));
+    let total: i32 = 24 + len(data) + data_pad;
+    let req: str = make_zero_buf(total);
+    store8(ptr(req), to_u8(18));
+    write_u16_le(req, 2, total / 4);
+    write_u32_le(req, 4, window_id);
+    write_u32_le(req, 8, property_atom);
+    write_u32_le(req, 12, type_atom);
+    store8(ptr(req) + 16, to_u8(format_bits));
+    write_u32_le(req, 20, item_count);
+    let i: i32 = 0;
+    while (i < len(data)) {
+        store8(ptr(req) + i32_to_u64(24 + i), byte_at(data, i));
+        i = i + 1;
+    }
+    write_all(g_x_fd, req, total);
+}
+
+fn x_set_title(title: str) -> void {
+    x_change_property(g_window_id, 39, 31, 8, title, len(title));
+    if (g_atom_net_wm_name != 0 && g_atom_utf8_string != 0) {
+        x_change_property(g_window_id, g_atom_net_wm_name, g_atom_utf8_string, 8, title, len(title));
+    }
+}
+
+fn x_set_wm_protocols() -> void {
+    let data: str = make_zero_buf(4);
+    write_u32_le(data, 0, g_atom_wm_delete_window);
+    x_change_property(g_window_id, g_atom_wm_protocols, 4, 32, data, 1);
+}
+
+fn x_create_window() -> i32 {
+    g_window_id = next_resource_id();
+    let req: str = make_zero_buf(44);
+    store8(ptr(req), to_u8(1));
+    store8(ptr(req) + 1, to_u8(0));
+    write_u16_le(req, 2, 11);
+    write_u32_le(req, 4, g_window_id);
+    write_u32_le(req, 8, g_root_window);
+    write_u16_le(req, 12, 0);
+    write_u16_le(req, 14, 0);
+    write_u16_le(req, 16, g_width);
+    write_u16_le(req, 18, g_height);
+    write_u16_le(req, 20, 0);
+    write_u16_le(req, 22, 1);
+    write_u32_le(req, 24, 0);
+    write_u32_le(req, 28, 0x0000080A);
+    write_u32_le(req, 32, g_bg);
+    write_u32_le(req, 36, g_black_pixel);
+    write_u32_le(req, 40, 0x00028003);
+    return write_all(g_x_fd, req, 44);
+}
+
+fn x_create_gc() -> void {
+    g_gc_id = next_resource_id();
+    let req: str = make_zero_buf(24);
+    store8(ptr(req), to_u8(55));
+    write_u16_le(req, 2, 6);
+    write_u32_le(req, 4, g_gc_id);
+    write_u32_le(req, 8, g_window_id);
+    write_u32_le(req, 12, 0x00010004);
+    write_u32_le(req, 16, g_black_pixel);
+    write_u32_le(req, 20, 0);
+    write_all(g_x_fd, req, 24);
+}
+
+fn x_change_gc_color(color: i32) -> void {
+    let req: str = make_zero_buf(16);
+    store8(ptr(req), to_u8(56));
+    write_u16_le(req, 2, 4);
+    write_u32_le(req, 4, g_gc_id);
+    write_u32_le(req, 8, 0x00000004);
+    write_u32_le(req, 12, color & 0x00FFFFFF);
+    write_all(g_x_fd, req, 16);
+}
+
+fn x_fill_rect(x: i32, y: i32, w: i32, h: i32, color: i32) -> void {
+    if (g_x_fd < 0 || w <= 0 || h <= 0) { return; }
+    x_change_gc_color(color);
+    let req: str = make_zero_buf(20);
+    store8(ptr(req), to_u8(70));
+    write_u16_le(req, 2, 5);
+    write_u32_le(req, 4, g_window_id);
+    write_u32_le(req, 8, g_gc_id);
+    write_u16_le(req, 12, x);
+    write_u16_le(req, 14, y);
+    write_u16_le(req, 16, w);
+    write_u16_le(req, 18, h);
+    write_all(g_x_fd, req, 20);
+}
+
+fn x_map_window() -> void {
+    let req: str = make_zero_buf(8);
+    store8(ptr(req), to_u8(8));
+    write_u16_le(req, 2, 2);
+    write_u32_le(req, 4, g_window_id);
+    write_all(g_x_fd, req, 8);
+}
+
+fn x_unmap_window() -> void {
+    let req: str = make_zero_buf(8);
+    store8(ptr(req), to_u8(10));
+    write_u16_le(req, 2, 2);
+    write_u32_le(req, 4, g_window_id);
+    write_all(g_x_fd, req, 8);
+}
+
+fn x_resize_window(width: i32, height: i32) -> void {
+    let req: str = make_zero_buf(20);
+    store8(ptr(req), to_u8(12));
+    write_u16_le(req, 2, 5);
+    write_u32_le(req, 4, g_window_id);
+    write_u16_le(req, 8, 0x000C);
+    write_u32_le(req, 12, width);
+    write_u32_le(req, 16, height);
+    write_all(g_x_fd, req, 20);
+}
+
+fn render_background() -> void {
+    x_fill_rect(0, 0, g_width, g_height, g_bg);
+}
+
+fn frame_reset() -> void {
+    g_rect_x = [];
+    g_rect_y = [];
+    g_rect_w = [];
+    g_rect_h = [];
+    g_rect_color = [];
+    g_rect_count = 0;
+}
+
+fn frame_add_rect(x: i32, y: i32, w: i32, h: i32, color: i32) -> void {
+    array_append(g_rect_x, x);
+    array_append(g_rect_y, y);
+    array_append(g_rect_w, w);
+    array_append(g_rect_h, h);
+    array_append(g_rect_color, color);
+    g_rect_count = g_rect_count + 1;
+}
+
+fn frame_redraw() -> void {
+    render_background();
+    let i: i32 = 0;
+    while (i < g_rect_count) {
+        x_fill_rect(g_rect_x[i], g_rect_y[i], g_rect_w[i], g_rect_h[i], g_rect_color[i]);
+        i = i + 1;
+    }
+}
+
+fn keycode_bit(code: i32) -> i32 {
+    if (code == 113 || code == 38) { return 1; }
+    if (code == 114 || code == 40) { return 2; }
+    if (code == 111 || code == 25 || code == 65) { return 4; }
+    if (code == 116 || code == 39) { return 8; }
+    if (code == 9) { return 16; }
+    return 0;
+}
+
+fn process_x_message(pkt: str) -> void {
+    let kind: i32 = byte_at(pkt, 0) & 127;
+    if (kind == 2 || kind == 3) {
+        let bit: i32 = keycode_bit(byte_at(pkt, 1));
+        if (bit != 0) {
+            if (kind == 2) { g_input_mask = g_input_mask | bit; }
+            else { g_input_mask = g_input_mask & (0 - 1 - bit); }
+        }
+        return;
+    }
+    if (kind == 12) {
+        if (g_drawing_frame == 1) {
+            g_redraw_pending = 1;
+        } else {
+            frame_redraw();
+        }
+        return;
+    }
+    if (kind == 22) {
+        let new_w: i32 = read_u16_le(pkt, 20);
+        let new_h: i32 = read_u16_le(pkt, 22);
+        if (new_w > 0) { g_width = new_w; }
+        if (new_h > 0) { g_height = new_h; }
+        if (g_drawing_frame == 1) {
+            g_redraw_pending = 1;
+        } else {
+            frame_redraw();
+        }
+        return;
+    }
+    if (kind == 33) {
+        let message_type: i32 = read_u32_le(pkt, 8);
+        let message_atom: i32 = read_u32_le(pkt, 12);
+        if (message_type == g_atom_wm_protocols && message_atom == g_atom_wm_delete_window) {
+            g_input_mask = g_input_mask | 16;
+        }
+        return;
+    }
+}
+
+fn init_x11(title: str) -> i32 {
+    let display_str: str = getenv("DISPLAY");
+    if (len(display_str) > 0) { g_display = display_str; }
+    g_xauthority = getenv("XAUTHORITY");
+    g_home = get_home_dir();
+    g_title = title;
+    g_x_fd = x_connect();
+    if (g_x_fd < 0) { return -1; }
+    if (x_setup(g_x_fd) != 0) { return -1; }
+    g_atom_wm_protocols = x_intern_atom("WM_PROTOCOLS");
+    g_atom_wm_delete_window = x_intern_atom("WM_DELETE_WINDOW");
+    g_atom_net_wm_name = x_intern_atom("_NET_WM_NAME");
+    g_atom_utf8_string = x_intern_atom("UTF8_STRING");
+    x_create_window();
+    x_set_wm_protocols();
+    x_set_title(g_title);
+    x_create_gc();
+    x_map_window();
+    render_background();
+    x_sync();
+    return 0;
 }
 
 fn wm_open(title: str, exe_path: str, sock_path: str) -> i32 {
-    if (len(exe_path) == 0) {
-        exe_path = wm_exe_default();
-    }
-
-    let port: i32 = wm_default_port();
-    wm_stop_stale_helper(port);
-
-    let pid: i32 = wm_spawn_linux(exe_path, title, port, 960, 640);
-    if (pid < 0) {
-        return -1;
-    }
-
-    let attempts: i32 = 0;
-    let fd: i32 = -1;
-    while (attempts < 80) {
-        fd = wm_connect_port(port);
-        if (fd >= 0) {
-            return fd;
-        }
-        wm_sleep_ms(50);
-        attempts = attempts + 1;
-    }
-    return -1;
+    g_width = 960;
+    g_height = 640;
+    g_bg = 0x0012182a;
+    g_input_mask = 0;
+    g_drawing_frame = 0;
+    g_redraw_pending = 0;
+    frame_reset();
+    if (init_x11(title) != 0) { return -1; }
+    return g_x_fd;
 }
 
 fn wm_open_default(title: str) -> i32 {
@@ -155,63 +655,76 @@ fn wm_open_default(title: str) -> i32 {
 }
 
 fn wm_title(fd: i32, title: str) -> i32 {
-    wm_send_cmd(fd, "TITLE", title);
-    wm_recv_line(fd);
+    g_title = title;
+    x_set_title(g_title);
+    x_sync();
     return 0;
 }
 
 fn wm_resize(fd: i32, width: i32, height: i32) -> i32 {
-    wm_send_cmd(fd, "RESIZE", int_to_str(width) + "x" + int_to_str(height));
-    wm_recv_line(fd);
+    if (width > 0) { g_width = width; }
+    if (height > 0) { g_height = height; }
+    x_resize_window(g_width, g_height);
+    x_sync();
     return 0;
 }
 
 fn wm_show(fd: i32) -> i32 {
-    wm_send_cmd(fd, "SHOW", "");
-    wm_recv_line(fd);
+    x_map_window();
+    x_sync();
     return 0;
 }
 
 fn wm_hide(fd: i32) -> i32 {
-    wm_send_cmd(fd, "HIDE", "");
-    wm_recv_line(fd);
+    x_unmap_window();
+    x_sync();
     return 0;
 }
 
 fn wm_ping(fd: i32) -> i32 {
-    wm_send_cmd(fd, "PING", "");
-    wm_recv_line(fd);
+    x_pump_events();
     return 0;
 }
 
 fn wm_quit(fd: i32) -> i32 {
-    wm_send_cmd(fd, "QUIT", "");
-    wm_recv_line(fd);
-    net_close(fd);
+    if (g_x_fd >= 0) {
+        sys_close(g_x_fd);
+        g_x_fd = -1;
+    }
     return 0;
 }
 
 fn wm_clear(fd: i32, color: i32) -> i32 {
-    wm_send_cmd(fd, "CLEAR", int_to_str(color));
-    wm_recv_line(fd);
+    g_drawing_frame = 1;
+    g_redraw_pending = 0;
+    g_bg = color;
+    frame_reset();
+    render_background();
     return 0;
 }
 
 fn wm_rect(fd: i32, x: i32, y: i32, width: i32, height: i32, color: i32) -> i32 {
-    let payload: str = int_to_str(x) + " " + int_to_str(y) + " " + int_to_str(width) + " " + int_to_str(height) + " " + int_to_str(color);
-    wm_send_cmd(fd, "RECT", payload);
-    wm_recv_line(fd);
+    frame_add_rect(x, y, width, height, color);
+    x_fill_rect(x, y, width, height, color);
     return 0;
 }
 
 fn wm_present(fd: i32) -> i32 {
-    wm_send_cmd(fd, "PRESENT", "");
-    wm_recv_line(fd);
+    g_drawing_frame = 0;
+    x_pump_events();
+    frame_redraw();
+    g_redraw_pending = 0;
+    x_sync();
     return 0;
 }
 
 fn wm_input(fd: i32) -> i32 {
-    wm_send_cmd(fd, "INPUT", "");
-    let line: str = wm_recv_line(fd);
-    return wm_parse_tail_i32(line, "INPUT ");
+    g_drawing_frame = 0;
+    x_pump_events();
+    return g_input_mask;
+}
+
+fn wm_size(fd: i32) -> str {
+    x_pump_events();
+    return int_to_str(g_width) + "x" + int_to_str(g_height);
 }

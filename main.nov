@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // window - native window helpers
-// macOS uses the existing WebKit helper, Linux/amd64 uses an X11 helper.
+// macOS uses the existing WebKit helper; Linux/amd64 talks to X11 in-process.
 // ---------------------------------------------------------------------------
 
 module window_main;

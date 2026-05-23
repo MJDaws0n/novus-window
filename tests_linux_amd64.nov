@@ -29,9 +29,6 @@ fn main(argc: i32, argv: u64) -> i32 {
     fails = fails + assert_eq_i32("wm_input_left", wm_input_left(), 1);
     fails = fails + assert_eq_i32("wm_input_right", wm_input_right(), 2);
     fails = fails + assert_eq_i32("wm_input_jump", wm_input_jump(), 4);
-    fails = fails + assert_eq_i32("parse INPUT", wm_parse_tail_i32("INPUT 13", "INPUT "), 13);
-    fails = fails + assert_eq_i32("parse invalid", wm_parse_tail_i32("PONG", "INPUT "), 0);
-
     let before: i64 = get_time_ns();
     wm_sleep_ms(20);
     let after: i64 = get_time_ns();
