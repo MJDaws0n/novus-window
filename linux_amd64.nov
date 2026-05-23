@@ -9,7 +9,10 @@ import ../net/main;
 import ../env/main;
 
 fn wm_default_port() -> i32 {
-    return 47832;
+    mov(rax, 39); // SYS_getpid
+    syscall();
+    let pid: i32 = u64_to_i32(getreg(rax));
+    return 42000 + (pid % 20000);
 }
 
 fn wm_exe_default() -> str {
