@@ -1,9 +1,46 @@
 #!/bin/sh
 set -eu
 
+PATH=/usr/bin:/bin
+COMPILER_PATH=/usr/libexec/gcc/x86_64-linux-gnu/13:/usr/lib/gcc/x86_64-linux-gnu/13
+export PATH COMPILER_PATH
+
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SRC="$SCRIPT_DIR/unbuilt/linux_x11_window_manager.c"
 BIN="$SCRIPT_DIR/.window_manager_linux.bin"
+DISPLAY_VALUE=""
+XAUTHORITY_VALUE=""
+HOME_VALUE=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --display)
+      DISPLAY_VALUE=${2-}
+      shift 2
+      ;;
+    --xauthority)
+      XAUTHORITY_VALUE=${2-}
+      shift 2
+      ;;
+    --home)
+      HOME_VALUE=${2-}
+      shift 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [ -n "$DISPLAY_VALUE" ]; then
+  export DISPLAY="$DISPLAY_VALUE"
+fi
+if [ -n "$XAUTHORITY_VALUE" ]; then
+  export XAUTHORITY="$XAUTHORITY_VALUE"
+fi
+if [ -n "$HOME_VALUE" ]; then
+  export HOME="$HOME_VALUE"
+fi
 
 if [ ! -x "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
   cc -O2 -Wall -Wextra "$SRC" /lib/x86_64-linux-gnu/libX11.so.6 -o "$BIN"

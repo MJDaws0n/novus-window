@@ -189,7 +189,6 @@ static void pump_x11(void) {
         } else if (ev.type == CLIENT_MESSAGE) {
             if ((Atom)ev.xclient.data.l[0] == g_wm_delete) {
                 g_input_mask |= INPUT_QUIT;
-                g_running = 0;
             }
         }
     }
