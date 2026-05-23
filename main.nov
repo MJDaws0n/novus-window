@@ -1,8 +1,13 @@
 // ---------------------------------------------------------------------------
-// window - macOS window manager (WebKit via C helper over UNIX socket)
-// macOS only — includes window_manager binary for Apple Silicon.
+// window - native window helpers
+// macOS uses the existing WebKit helper, Linux/amd64 uses an X11 helper.
 // ---------------------------------------------------------------------------
 
 module window_main;
 
-import darwin_arm64;
+#if(os == "darwin") {
+    import darwin_arm64;
+}
+#if(os == "linux") {
+    import linux_amd64;
+}

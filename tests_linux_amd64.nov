@@ -1,0 +1,47 @@
+module window_tests_linux_amd64;
+
+import main;
+
+fn test_pass(name: str) -> void {
+    print_raw("  [PASS] " + name + "\n");
+}
+
+fn test_fail(name: str, detail: str) -> void {
+    print_raw("  [FAIL] " + name + ": " + detail + "\n");
+}
+
+fn assert_eq_i32(name: str, got: i32, expected: i32) -> i32 {
+    if (got == expected) { test_pass(name); return 0; }
+    test_fail(name, "got " + i32_to_str(got) + ", expected " + i32_to_str(expected));
+    return 1;
+}
+
+fn assert_true(name: str, val: bool) -> i32 {
+    if (val) { test_pass(name); return 0; }
+    test_fail(name, "expected true");
+    return 1;
+}
+
+fn main(argc: i32, argv: u64) -> i32 {
+    let fails: i32 = 0;
+    print_raw("=== window tests (linux_amd64) ===\n");
+
+    fails = fails + assert_eq_i32("wm_input_left", wm_input_left(), 1);
+    fails = fails + assert_eq_i32("wm_input_right", wm_input_right(), 2);
+    fails = fails + assert_eq_i32("wm_input_jump", wm_input_jump(), 4);
+    fails = fails + assert_eq_i32("parse INPUT", wm_parse_tail_i32("INPUT 13", "INPUT "), 13);
+    fails = fails + assert_eq_i32("parse invalid", wm_parse_tail_i32("PONG", "INPUT "), 0);
+
+    let before: i64 = get_time_ns();
+    wm_sleep_ms(20);
+    let after: i64 = get_time_ns();
+    fails = fails + assert_true("wm_sleep_ms", ((after - before) / 1000000) >= 15);
+
+    print_raw("\n");
+    if (fails > 0) {
+        print_raw(i32_to_str(fails) + " test(s) FAILED\n");
+        return 1;
+    }
+    print_raw("All tests PASSED\n");
+    return 0;
+}

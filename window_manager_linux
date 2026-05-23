@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SRC="$SCRIPT_DIR/unbuilt/linux_x11_window_manager.c"
+BIN="$SCRIPT_DIR/.window_manager_linux.bin"
+
+if [ ! -x "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
+  cc -O2 -Wall -Wextra "$SRC" /lib/x86_64-linux-gnu/libX11.so.6 -o "$BIN"
+fi
+
+exec "$BIN" "$@"
