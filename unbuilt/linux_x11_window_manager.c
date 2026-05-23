@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <stdbool.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +52,20 @@ typedef struct {
     unsigned long serial;
     int send_event;
     Display *display;
+    Window event;
+    Window window;
+    int x, y;
+    int width, height;
+    int border_width;
+    Window above;
+    int override_redirect;
+} XConfigureEvent;
+
+typedef struct {
+    int type;
+    unsigned long serial;
+    int send_event;
+    Display *display;
     Window window;
     Atom message_type;
     int format;
@@ -65,6 +80,7 @@ typedef union {
     int type;
     XKeyEvent xkey;
     XExposeEvent xexpose;
+    XConfigureEvent xconfigure;
     XClientMessageEvent xclient;
     long pad[24];
 } XEvent;
@@ -95,6 +111,7 @@ extern int XResizeWindow(Display *, Window, unsigned int, unsigned int);
 #define KEY_PRESS 2
 #define KEY_RELEASE 3
 #define EXPOSE 12
+#define CONFIGURE_NOTIFY 22
 #define CLIENT_MESSAGE 33
 
 #define KEY_PRESS_MASK (1L << 0)
@@ -142,10 +159,25 @@ static int g_rect_count = 0;
 static int g_running = 1;
 static int g_client_fd = -1;
 
-static void send_line(const char *line) {
-    if (g_client_fd >= 0) {
-        (void)write(g_client_fd, line, strlen(line));
+static int send_line(const char *line) {
+    if (g_client_fd < 0) {
+        return -1;
     }
+    size_t offset = 0;
+    size_t total = strlen(line);
+    while (offset < total) {
+        ssize_t written = write(g_client_fd, line + offset, total - offset);
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            close(g_client_fd);
+            g_client_fd = -1;
+            return -1;
+        }
+        offset += (size_t)written;
+    }
+    return 0;
 }
 
 static unsigned long parse_color(const char *s) {
@@ -186,6 +218,12 @@ static void pump_x11(void) {
             set_key_mask(XLookupKeysym(&ev.xkey, 0), 0);
         } else if (ev.type == EXPOSE) {
             render_frame();
+        } else if (ev.type == CONFIGURE_NOTIFY) {
+            if (ev.xconfigure.width > 0 && ev.xconfigure.height > 0) {
+                g_width = ev.xconfigure.width;
+                g_height = ev.xconfigure.height;
+                render_frame();
+            }
         } else if (ev.type == CLIENT_MESSAGE) {
             if ((Atom)ev.xclient.data.l[0] == g_wm_delete) {
                 g_input_mask |= INPUT_QUIT;
@@ -262,6 +300,12 @@ static void process_command(const char *line) {
         send_line(out);
         return;
     }
+    if (strncmp(line, "SIZE", 4) == 0) {
+        char out[64];
+        snprintf(out, sizeof(out), "SIZE %dx%d\n", g_width, g_height);
+        send_line(out);
+        return;
+    }
     if (strncmp(line, "QUIT", 4) == 0) {
         send_line("BYE\n");
         g_running = 0;
@@ -296,6 +340,8 @@ static int open_server(int port) {
 int main(int argc, char **argv) {
     const char *title = "Novus Window";
     int port = 47832;
+
+    signal(SIGPIPE, SIG_IGN);
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {

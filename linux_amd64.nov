@@ -68,6 +68,13 @@ fn wm_parse_tail_i32(line: str, prefix: str) -> i32 {
     return str_to_i32(substr_len(line, len(prefix), len(line) - len(prefix)));
 }
 
+fn wm_size(fd: i32) -> str {
+    wm_send_cmd(fd, "SIZE", "");
+    let line: str = wm_recv_line(fd);
+    if (!wm_line_has_prefix(line, "SIZE ")) { return ""; }
+    return substr_len(line, 5, len(line) - 5);
+}
+
 fn wm_connect_port(port: i32) -> i32 {
     return net_connect_local(port);
 }
