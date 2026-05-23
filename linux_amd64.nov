@@ -23,6 +23,22 @@ fn make_zero_buf(size: i32) -> str {
     return buf;
 }
 
+fn x_set8(buf: str, off: i32, val: i32) -> void {
+    buf[off] = to_u8(val);
+}
+
+fn x_write_u16_le(buf: str, off: i32, val: i32) -> void {
+    x_set8(buf, off, val);
+    x_set8(buf, off + 1, val / 256);
+}
+
+fn x_write_u32_le(buf: str, off: i32, val: i32) -> void {
+    x_set8(buf, off, val);
+    x_set8(buf, off + 1, val / 256);
+    x_set8(buf, off + 2, val / 65536);
+    x_set8(buf, off + 3, val / 16777216);
+}
+
 fn write_u16_le(buf: str, off: i32, val: i32) -> void {
     store8(ptr(buf) + i32_to_u64(off), to_u8(val));
     store8(ptr(buf) + i32_to_u64(off + 1), to_u8(val / 256));
@@ -182,10 +198,17 @@ fn read_exact(fd: i32, count: i32) -> str {
 
 fn poll_x(timeout_ms: i32) -> i32 {
     if (g_x_fd < 0) { return 0; }
-    let buf: str = make_zero_buf(8);
+    let buf: str = g_req_poll;
+    if (g_request_buffers_ready == 0) {
+        buf = make_zero_buf(8);
+        write_u32_le(buf, 0, g_x_fd);
+        write_u16_le(buf, 4, 1);
+    } else {
+        x_write_u32_le(buf, 0, g_x_fd);
+        x_write_u16_le(buf, 4, 1);
+        x_write_u16_le(buf, 6, 0);
+    }
     let buf_ptr: u64 = ptr(buf);
-    write_u32_le(buf, 0, g_x_fd);
-    write_u16_le(buf, 4, 1);
     mov(rax, 7);
     mov(rdi, buf_ptr);
     mov(rsi, 1);
@@ -230,6 +253,10 @@ let g_black_pixel: i32 = 0;
 let g_root_depth: i32 = 0;
 let g_window_id: i32 = 0;
 let g_gc_id: i32 = 0;
+let g_gc_color: i32 = -1;
+let g_backbuffer_id: i32 = 0;
+let g_backbuffer_w: i32 = 0;
+let g_backbuffer_h: i32 = 0;
 let g_resource_base: i32 = 0;
 let g_resource_mask: i32 = 0;
 let g_resource_counter: i32 = 1;
@@ -237,14 +264,15 @@ let g_atom_wm_protocols: i32 = 0;
 let g_atom_wm_delete_window: i32 = 0;
 let g_atom_net_wm_name: i32 = 0;
 let g_atom_utf8_string: i32 = 0;
-let g_rect_x: []i32 = [];
-let g_rect_y: []i32 = [];
-let g_rect_w: []i32 = [];
-let g_rect_h: []i32 = [];
-let g_rect_color: []i32 = [];
-let g_rect_count: i32 = 0;
 let g_drawing_frame: i32 = 0;
-let g_redraw_pending: i32 = 0;
+let g_request_buffers_ready: i32 = 0;
+let g_req_change_gc: str = "";
+let g_req_fill_rect: str = "";
+let g_req_copy_area: str = "";
+let g_req_poll: str = "";
+let g_size_cache: str = "";
+let g_size_cache_w: i32 = -1;
+let g_size_cache_h: i32 = -1;
 
 fn wm_input_left() -> i32 { return 1; }
 fn wm_input_right() -> i32 { return 2; }
@@ -483,29 +511,97 @@ fn x_create_gc() -> void {
     write_all(g_x_fd, req, 24);
 }
 
-fn x_change_gc_color(color: i32) -> void {
+fn x_create_pixmap(width: i32, height: i32) -> i32 {
+    let pixmap_id: i32 = next_resource_id();
     let req: str = make_zero_buf(16);
-    store8(ptr(req), to_u8(56));
+    store8(ptr(req), to_u8(53));
+    store8(ptr(req) + 1, to_u8(g_root_depth));
     write_u16_le(req, 2, 4);
-    write_u32_le(req, 4, g_gc_id);
-    write_u32_le(req, 8, 0x00000004);
-    write_u32_le(req, 12, color & 0x00FFFFFF);
+    write_u32_le(req, 4, pixmap_id);
+    write_u32_le(req, 8, g_window_id);
+    write_u16_le(req, 12, width);
+    write_u16_le(req, 14, height);
     write_all(g_x_fd, req, 16);
+    return pixmap_id;
+}
+
+fn x_free_pixmap(pixmap_id: i32) -> void {
+    if (pixmap_id == 0) { return; }
+    let req: str = make_zero_buf(8);
+    store8(ptr(req), to_u8(54));
+    write_u16_le(req, 2, 2);
+    write_u32_le(req, 4, pixmap_id);
+    write_all(g_x_fd, req, 8);
+}
+
+fn x_ensure_backbuffer() -> void {
+    if (g_width <= 0 || g_height <= 0) { return; }
+    if (g_backbuffer_id != 0 && g_backbuffer_w == g_width && g_backbuffer_h == g_height) { return; }
+    if (g_backbuffer_id != 0) {
+        x_free_pixmap(g_backbuffer_id);
+    }
+    g_backbuffer_id = x_create_pixmap(g_width, g_height);
+    g_backbuffer_w = g_width;
+    g_backbuffer_h = g_height;
+}
+
+fn x_drawable() -> i32 {
+    if (g_backbuffer_id != 0) { return g_backbuffer_id; }
+    return g_window_id;
+}
+
+fn x_copy_backbuffer_to_window() -> void {
+    if (g_backbuffer_id == 0) { return; }
+    let req: str = g_req_copy_area;
+    x_set8(req, 0, 62);
+    x_write_u16_le(req, 2, 7);
+    x_write_u32_le(req, 4, g_backbuffer_id);
+    x_write_u32_le(req, 8, g_window_id);
+    x_write_u32_le(req, 12, g_gc_id);
+    x_write_u16_le(req, 16, 0);
+    x_write_u16_le(req, 18, 0);
+    x_write_u16_le(req, 20, 0);
+    x_write_u16_le(req, 22, 0);
+    x_write_u16_le(req, 24, g_backbuffer_w);
+    x_write_u16_le(req, 26, g_backbuffer_h);
+    write_all(g_x_fd, req, 28);
+}
+
+fn x_change_gc_color(color: i32) -> void {
+    let normalized: i32 = color & 0x00FFFFFF;
+    if (g_gc_color == normalized) { return; }
+    let req: str = g_req_change_gc;
+    x_set8(req, 0, 56);
+    x_write_u16_le(req, 2, 4);
+    x_write_u32_le(req, 4, g_gc_id);
+    x_write_u32_le(req, 8, 0x00000004);
+    x_write_u32_le(req, 12, normalized);
+    write_all(g_x_fd, req, 16);
+    g_gc_color = normalized;
 }
 
 fn x_fill_rect(x: i32, y: i32, w: i32, h: i32, color: i32) -> void {
     if (g_x_fd < 0 || w <= 0 || h <= 0) { return; }
     x_change_gc_color(color);
-    let req: str = make_zero_buf(20);
-    store8(ptr(req), to_u8(70));
-    write_u16_le(req, 2, 5);
-    write_u32_le(req, 4, g_window_id);
-    write_u32_le(req, 8, g_gc_id);
-    write_u16_le(req, 12, x);
-    write_u16_le(req, 14, y);
-    write_u16_le(req, 16, w);
-    write_u16_le(req, 18, h);
+    let req: str = g_req_fill_rect;
+    x_set8(req, 0, 70);
+    x_write_u16_le(req, 2, 5);
+    x_write_u32_le(req, 4, x_drawable());
+    x_write_u32_le(req, 8, g_gc_id);
+    x_write_u16_le(req, 12, x);
+    x_write_u16_le(req, 14, y);
+    x_write_u16_le(req, 16, w);
+    x_write_u16_le(req, 18, h);
     write_all(g_x_fd, req, 20);
+}
+
+fn x_init_request_buffers() -> void {
+    if (g_request_buffers_ready != 0) { return; }
+    g_req_change_gc = make_zero_buf(16);
+    g_req_fill_rect = make_zero_buf(20);
+    g_req_copy_area = make_zero_buf(28);
+    g_req_poll = make_zero_buf(8);
+    g_request_buffers_ready = 1;
 }
 
 fn x_map_window() -> void {
@@ -539,33 +635,6 @@ fn render_background() -> void {
     x_fill_rect(0, 0, g_width, g_height, g_bg);
 }
 
-fn frame_reset() -> void {
-    g_rect_x = [];
-    g_rect_y = [];
-    g_rect_w = [];
-    g_rect_h = [];
-    g_rect_color = [];
-    g_rect_count = 0;
-}
-
-fn frame_add_rect(x: i32, y: i32, w: i32, h: i32, color: i32) -> void {
-    array_append(g_rect_x, x);
-    array_append(g_rect_y, y);
-    array_append(g_rect_w, w);
-    array_append(g_rect_h, h);
-    array_append(g_rect_color, color);
-    g_rect_count = g_rect_count + 1;
-}
-
-fn frame_redraw() -> void {
-    render_background();
-    let i: i32 = 0;
-    while (i < g_rect_count) {
-        x_fill_rect(g_rect_x[i], g_rect_y[i], g_rect_w[i], g_rect_h[i], g_rect_color[i]);
-        i = i + 1;
-    }
-}
-
 fn keycode_bit(code: i32) -> i32 {
     if (code == 113 || code == 38) { return 1; }
     if (code == 114 || code == 40) { return 2; }
@@ -586,10 +655,8 @@ fn process_x_message(pkt: str) -> void {
         return;
     }
     if (kind == 12) {
-        if (g_drawing_frame == 1) {
-            g_redraw_pending = 1;
-        } else {
-            frame_redraw();
+        if (g_drawing_frame == 0) {
+            x_copy_backbuffer_to_window();
         }
         return;
     }
@@ -598,11 +665,6 @@ fn process_x_message(pkt: str) -> void {
         let new_h: i32 = read_u16_le(pkt, 22);
         if (new_w > 0) { g_width = new_w; }
         if (new_h > 0) { g_height = new_h; }
-        if (g_drawing_frame == 1) {
-            g_redraw_pending = 1;
-        } else {
-            frame_redraw();
-        }
         return;
     }
     if (kind == 33) {
@@ -628,12 +690,15 @@ fn init_x11(title: str) -> i32 {
     g_atom_wm_delete_window = x_intern_atom("WM_DELETE_WINDOW");
     g_atom_net_wm_name = x_intern_atom("_NET_WM_NAME");
     g_atom_utf8_string = x_intern_atom("UTF8_STRING");
+    x_init_request_buffers();
     x_create_window();
     x_set_wm_protocols();
     x_set_title(g_title);
     x_create_gc();
+    x_ensure_backbuffer();
     x_map_window();
     render_background();
+    x_copy_backbuffer_to_window();
     x_sync();
     return 0;
 }
@@ -644,8 +709,10 @@ fn wm_open(title: str, exe_path: str, sock_path: str) -> i32 {
     g_bg = 0x0012182a;
     g_input_mask = 0;
     g_drawing_frame = 0;
-    g_redraw_pending = 0;
-    frame_reset();
+    g_gc_color = -1;
+    g_size_cache_w = -1;
+    g_size_cache_h = -1;
+    g_request_buffers_ready = 0;
     if (init_x11(title) != 0) { return -1; }
     return g_x_fd;
 }
@@ -688,6 +755,10 @@ fn wm_ping(fd: i32) -> i32 {
 
 fn wm_quit(fd: i32) -> i32 {
     if (g_x_fd >= 0) {
+        if (g_backbuffer_id != 0) {
+            x_free_pixmap(g_backbuffer_id);
+            g_backbuffer_id = 0;
+        }
         sys_close(g_x_fd);
         g_x_fd = -1;
     }
@@ -696,15 +767,13 @@ fn wm_quit(fd: i32) -> i32 {
 
 fn wm_clear(fd: i32, color: i32) -> i32 {
     g_drawing_frame = 1;
-    g_redraw_pending = 0;
     g_bg = color;
-    frame_reset();
+    x_ensure_backbuffer();
     render_background();
     return 0;
 }
 
 fn wm_rect(fd: i32, x: i32, y: i32, width: i32, height: i32, color: i32) -> i32 {
-    frame_add_rect(x, y, width, height, color);
     x_fill_rect(x, y, width, height, color);
     return 0;
 }
@@ -712,9 +781,7 @@ fn wm_rect(fd: i32, x: i32, y: i32, width: i32, height: i32, color: i32) -> i32 
 fn wm_present(fd: i32) -> i32 {
     g_drawing_frame = 0;
     x_pump_events();
-    frame_redraw();
-    g_redraw_pending = 0;
-    x_sync();
+    x_copy_backbuffer_to_window();
     return 0;
 }
 
@@ -725,6 +792,10 @@ fn wm_input(fd: i32) -> i32 {
 }
 
 fn wm_size(fd: i32) -> str {
-    x_pump_events();
-    return int_to_str(g_width) + "x" + int_to_str(g_height);
+    if (g_size_cache_w != g_width || g_size_cache_h != g_height) {
+        g_size_cache = int_to_str(g_width) + "x" + int_to_str(g_height);
+        g_size_cache_w = g_width;
+        g_size_cache_h = g_height;
+    }
+    return g_size_cache;
 }
