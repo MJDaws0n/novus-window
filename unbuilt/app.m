@@ -82,21 +82,28 @@ static char              g_sock_path[256] = DEFAULT_SOCKET_PATH;
 @implementation NovusView
 - (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
+- (BOOL)preservesContentDuringLiveResize { return NO; }
 
 - (void)drawRect:(NSRect)dirty {
-    (void)dirty;
+    [[NSColor blackColor] setFill];
+    NSRectFill(dirty);
+
+    int fb_width = 0;
+    int fb_height = 0;
     pthread_mutex_lock(&g_fb_lock);
     if (g_back == NULL) {
         pthread_mutex_unlock(&g_fb_lock);
         return;
     }
+    fb_width = g_width;
+    fb_height = g_height;
     CGImageRef img = CGBitmapContextCreateImage(g_back);
     pthread_mutex_unlock(&g_fb_lock);
 
     if (img == NULL) { return; }
 
     CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
-    CGRect r = CGRectMake(0, 0, self.bounds.size.width, self.bounds.size.height);
+    CGRect r = CGRectMake(0, 0, fb_width, fb_height);
     CGContextSaveGState(ctx);
     // Our framebuffer is top-left origin; flip Y for the view.
     CGContextTranslateCTM(ctx, 0, self.bounds.size.height);
@@ -124,6 +131,10 @@ static char              g_sock_path[256] = DEFAULT_SOCKET_PATH;
     (void)note;
     g_input_mask |= INPUT_QUIT;
 }
+- (void)windowDidResize:(NSNotification *)note {
+    (void)note;
+    [g_view setNeedsDisplay:YES];
+}
 @end
 
 // ---------------------------------------------------------------------------
@@ -150,12 +161,6 @@ static void fb_create_locked(int w, int h) {
     g_back = CGBitmapContextCreate(g_back_pixels, w, h, 8, (size_t)w * 4, cs,
                                    kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
     CGColorSpaceRelease(cs);
-}
-
-static inline void fb_set_pixel(int x, int y, uint32_t color) {
-    if ((unsigned)x >= (unsigned)g_width || (unsigned)y >= (unsigned)g_height) { return; }
-    uint32_t *p = (uint32_t *)(g_back_pixels + ((size_t)y * (size_t)g_width + (size_t)x) * 4);
-    *p = color;
 }
 
 static void fb_fill_rect(int x, int y, int w, int h, uint32_t color) {
@@ -257,6 +262,18 @@ static void window_resize(int w, int h) {
 static void window_present(void) { [g_view setNeedsDisplay:YES]; }
 
 static void window_title(NSString *t) { [g_window setTitle:t]; }
+
+static void window_size(int *w, int *h) {
+    if (g_window == nil) {
+        *w = g_width;
+        *h = g_height;
+        return;
+    }
+
+    NSRect bounds = [[g_window contentView] bounds];
+    *w = (int)(bounds.size.width + 0.5);
+    *h = (int)(bounds.size.height + 0.5);
+}
 
 // ---------------------------------------------------------------------------
 // Line parsing
@@ -376,8 +393,11 @@ static void handle_command(int fd, char *line) {
     if (strcmp(cmd, "HIDE") == 0)  { on_main(^{ window_hide(); }); reply(fd, "OK\n"); return; }
     if (strcmp(cmd, "PING") == 0)  { reply(fd, "PONG\n"); return; }
     if (strcmp(cmd, "SIZE") == 0) {
+        __block int sw = g_width;
+        __block int sh = g_height;
+        on_main(^{ window_size(&sw, &sh); });
         char buf[64];
-        int n = snprintf(buf, sizeof(buf), "SIZE %d %d\n", g_width, g_height);
+        int n = snprintf(buf, sizeof(buf), "SIZE %d %d\n", sw, sh);
         write_all(fd, buf, (size_t)n);
         return;
     }
