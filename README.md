@@ -49,3 +49,7 @@ X11) is that macOS does not expose a public protocol for its window server —
 all native windows must go through `AppKit`/`CoreGraphics`, which is linked
 into the helper. The Novus side of the library is still pure Novus
 (syscalls only).
+
+The helper tracks the live content size during resize and seeds newly exposed
+framebuffer space with the last clear color, so apps can expand the visible
+play area instead of leaving black borders around the old frame.

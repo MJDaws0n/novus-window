@@ -215,6 +215,25 @@ fn wm_recv_ok(fd: i32) -> str {
     return wm_recv_line(fd, 64);
 }
 
+fn wm_parse_size_value(line: str, token_index: i32) -> i32 {
+    let i: i32 = 0;
+    let current: i32 = 0;
+
+    while (i < len(line)) {
+        while (i < len(line) && line[i] == ' ') { i = i + 1; }
+        if (i >= len(line)) { return -1; }
+
+        let start: i32 = i;
+        while (i < len(line) && line[i] != ' ') { i = i + 1; }
+        if (current == token_index) {
+            return str_to_i32(substr_len(line, start, i - start));
+        }
+        current = current + 1;
+    }
+
+    return -1;
+}
+
 // ---------------------------------------------------------------------------
 // Sleep helper (used for connection retry)
 // ---------------------------------------------------------------------------
@@ -436,6 +455,12 @@ fn wm_input(fd: i32) -> i32 {
 }
 
 fn wm_size(fd: i32) -> str {
+    wm_send_cmd(fd, "SIZE", "");
+    let resp: str = wm_recv_line(fd, 64);
+    let width: i32 = wm_parse_size_value(resp, 1);
+    let height: i32 = wm_parse_size_value(resp, 2);
+    if (width > 0) { g_wm_width = width; }
+    if (height > 0) { g_wm_height = height; }
     if (g_wm_size_cache_w != g_wm_width || g_wm_size_cache_h != g_wm_height) {
         g_wm_size_cache = int_to_str(g_wm_width) + "x" + int_to_str(g_wm_height);
         g_wm_size_cache_w = g_wm_width;

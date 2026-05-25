@@ -72,6 +72,10 @@ static volatile bool     g_should_quit = false;
 static int               g_client_fd   = -1;
 static int               g_listen_fd   = -1;
 static char              g_sock_path[256] = DEFAULT_SOCKET_PATH;
+static uint32_t          g_clear_color = 0xFF000000u;
+static bool              g_programmatic_resize = false;
+
+static void window_sync_content_size(void);
 
 // ---------------------------------------------------------------------------
 // Custom view: blits the offscreen framebuffer
@@ -133,6 +137,9 @@ static char              g_sock_path[256] = DEFAULT_SOCKET_PATH;
 }
 - (void)windowDidResize:(NSNotification *)note {
     (void)note;
+    if (!g_programmatic_resize) {
+        window_sync_content_size();
+    }
     [g_view setNeedsDisplay:YES];
 }
 @end
@@ -151,6 +158,22 @@ static void fb_destroy_locked(void) {
     }
 }
 
+static void fb_fill_rect_locked(int x, int y, int w, int h, uint32_t color) {
+    if (g_back_pixels == NULL) { return; }
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + w; if (x1 > g_width)  x1 = g_width;
+    int y1 = y + h; if (y1 > g_height) y1 = g_height;
+    if (x0 >= x1 || y0 >= y1) { return; }
+
+    uint32_t bgra = 0xFF000000u | (color & 0x00FFFFFFu);
+
+    for (int yy = y0; yy < y1; ++yy) {
+        uint32_t *row = (uint32_t *)(g_back_pixels + ((size_t)yy * (size_t)g_width + (size_t)x0) * 4);
+        for (int xx = x0; xx < x1; ++xx) { row[xx - x0] = bgra; }
+    }
+}
+
 static void fb_create_locked(int w, int h) {
     fb_destroy_locked();
     size_t bytes = (size_t)w * (size_t)h * 4;
@@ -161,28 +184,20 @@ static void fb_create_locked(int w, int h) {
     g_back = CGBitmapContextCreate(g_back_pixels, w, h, 8, (size_t)w * 4, cs,
                                    kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
     CGColorSpaceRelease(cs);
+    fb_fill_rect_locked(0, 0, w, h, g_clear_color);
 }
 
 static void fb_fill_rect(int x, int y, int w, int h, uint32_t color) {
-    if (g_back_pixels == NULL) { return; }
-    int x0 = x < 0 ? 0 : x;
-    int y0 = y < 0 ? 0 : y;
-    int x1 = x + w; if (x1 > g_width)  x1 = g_width;
-    int y1 = y + h; if (y1 > g_height) y1 = g_height;
-    if (x0 >= x1 || y0 >= y1) { return; }
-
-    // Strip alpha → solid color; framebuffer ignores alpha but we write
-    // it anyway as 0xFF for consistency.
-    uint32_t bgra = 0xFF000000u | (color & 0x00FFFFFFu);
-
-    for (int yy = y0; yy < y1; ++yy) {
-        uint32_t *row = (uint32_t *)(g_back_pixels + ((size_t)yy * (size_t)g_width + (size_t)x0) * 4);
-        for (int xx = x0; xx < x1; ++xx) { row[xx - x0] = bgra; }
-    }
+    pthread_mutex_lock(&g_fb_lock);
+    fb_fill_rect_locked(x, y, w, h, color);
+    pthread_mutex_unlock(&g_fb_lock);
 }
 
 static void fb_clear(uint32_t color) {
-    fb_fill_rect(0, 0, g_width, g_height, color);
+    pthread_mutex_lock(&g_fb_lock);
+    g_clear_color = color;
+    fb_fill_rect_locked(0, 0, g_width, g_height, color);
+    pthread_mutex_unlock(&g_fb_lock);
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +253,24 @@ static void window_create(int w, int h, NSString *title) {
     }];
 }
 
+static void window_sync_content_size(void) {
+    if (g_window == nil) { return; }
+
+    NSRect bounds = [[g_window contentView] bounds];
+    int w = (int)(bounds.size.width + 0.5);
+    int h = (int)(bounds.size.height + 0.5);
+    if (w < 1) { w = 1; }
+    if (h < 1) { h = 1; }
+
+    pthread_mutex_lock(&g_fb_lock);
+    if (w != g_width || h != g_height || g_back == NULL) {
+        g_width = w;
+        g_height = h;
+        fb_create_locked(w, h);
+    }
+    pthread_mutex_unlock(&g_fb_lock);
+}
+
 static void window_show(void) {
     [g_window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
@@ -246,17 +279,15 @@ static void window_show(void) {
 static void window_hide(void) { [g_window orderOut:nil]; }
 
 static void window_resize(int w, int h) {
-    g_width = w;
-    g_height = h;
-    pthread_mutex_lock(&g_fb_lock);
-    fb_create_locked(w, h);
-    pthread_mutex_unlock(&g_fb_lock);
     NSRect cf = [g_window contentRectForFrameRect:[g_window frame]];
     cf.size.width = w;
     cf.size.height = h;
     NSRect ff = [g_window frameRectForContentRect:cf];
+    g_programmatic_resize = true;
     [g_window setFrame:ff display:YES animate:NO];
-    [g_view setFrame:NSMakeRect(0, 0, w, h)];
+    g_programmatic_resize = false;
+    window_sync_content_size();
+    [g_view setNeedsDisplay:YES];
 }
 
 static void window_present(void) { [g_view setNeedsDisplay:YES]; }
@@ -264,15 +295,11 @@ static void window_present(void) { [g_view setNeedsDisplay:YES]; }
 static void window_title(NSString *t) { [g_window setTitle:t]; }
 
 static void window_size(int *w, int *h) {
-    if (g_window == nil) {
-        *w = g_width;
-        *h = g_height;
-        return;
-    }
-
-    NSRect bounds = [[g_window contentView] bounds];
-    *w = (int)(bounds.size.width + 0.5);
-    *h = (int)(bounds.size.height + 0.5);
+    window_sync_content_size();
+    pthread_mutex_lock(&g_fb_lock);
+    *w = g_width;
+    *h = g_height;
+    pthread_mutex_unlock(&g_fb_lock);
 }
 
 // ---------------------------------------------------------------------------
