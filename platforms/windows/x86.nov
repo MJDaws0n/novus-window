@@ -1,0 +1,36 @@
+// ---------------------------------------------------------------------------
+// window/windows_amd64 - Stub.
+// Not yet implemented. A real implementation would either:
+//   (a) Talk Win32 GDI directly via ntdll/user32 syscalls, or
+//   (b) Ship a tiny C helper (analogous to the macOS Cocoa helper) that
+//       owns the HWND and speaks the same socket protocol.
+// ---------------------------------------------------------------------------
+
+module window_windows_x86;
+
+fn wm_input_left()  -> i32 { return 1; }
+fn wm_input_right() -> i32 { return 2; }
+fn wm_input_jump()  -> i32 { return 4; }
+fn wm_input_down()  -> i32 { return 8; }
+fn wm_input_quit()  -> i32 { return 16; }
+
+fn wm_unimpl(name: str) -> i32 {
+    print("[novus-window] " + name + " is not yet implemented on windows/x86");
+    return -1;
+}
+
+fn wm_sleep_ms(ms: i32) -> void { ms = ms + 0; }
+
+fn wm_open(title: str, exe_path: str, sock_path: str) -> i32 { return wm_unimpl("wm_open"); }
+fn wm_open_default(title: str) -> i32 { return wm_unimpl("wm_open_default"); }
+fn wm_title(fd: i32, title: str) -> i32 { return wm_unimpl("wm_title"); }
+fn wm_resize(fd: i32, w: i32, h: i32) -> i32 { return wm_unimpl("wm_resize"); }
+fn wm_show(fd: i32) -> i32 { return wm_unimpl("wm_show"); }
+fn wm_hide(fd: i32) -> i32 { return wm_unimpl("wm_hide"); }
+fn wm_ping(fd: i32) -> i32 { return wm_unimpl("wm_ping"); }
+fn wm_quit(fd: i32) -> i32 { return wm_unimpl("wm_quit"); }
+fn wm_clear(fd: i32, color: i32) -> i32 { return wm_unimpl("wm_clear"); }
+fn wm_rect(fd: i32, x: i32, y: i32, w: i32, h: i32, color: i32) -> i32 { return wm_unimpl("wm_rect"); }
+fn wm_present(fd: i32) -> i32 { return wm_unimpl("wm_present"); }
+fn wm_input(fd: i32) -> i32 { return wm_unimpl("wm_input"); }
+fn wm_size(fd: i32) -> str { return "0x0"; }

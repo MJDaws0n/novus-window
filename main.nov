@@ -2,8 +2,11 @@
 module window_main;
 
 #if(os == "darwin") {
-    import platforms/darwin/arm64;
+    import platforms/darwin/common;
 }
 #if(os == "linux") {
     import platforms/linux/common;
+}
+#if(os == "windows") {
+    import platforms/windows/common;
 }

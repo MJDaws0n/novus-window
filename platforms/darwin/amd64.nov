@@ -3,7 +3,7 @@
 // Spawns a C helper and communicates over a UNIX domain socket.
 // ---------------------------------------------------------------------------
 
-module window_darwin_arm64;
+module window_darwin_amd64;
 
 
 // ---------------------------------------------------------------------------
@@ -15,34 +15,34 @@ fn wm_to_u8(v: i32) -> i32 {
 }
 
 fn wm_syscall0(nr: i64) -> u64 {
-    mov(x16, 0x2000000 + nr);
+    mov(rax, 0x2000000 + nr);
     syscall();
-    return getreg(x0);
+    return getreg(rax);
 }
 
 fn wm_syscall1_i32(nr: i64, a0: i32) -> u64 {
-    mov(x0, a0);
-    mov(x16, 0x2000000 + nr);
+    mov(rdi, a0);
+    mov(rax, 0x2000000 + nr);
     syscall();
-    return getreg(x0);
+    return getreg(rax);
 }
 
 fn wm_syscall3_i32(nr: i64, a0: i32, a1: i32, a2: i32) -> u64 {
-    mov(x0, a0);
-    mov(x1, a1);
-    mov(x2, a2);
-    mov(x16, 0x2000000 + nr);
+    mov(rdi, a0);
+    mov(rsi, a1);
+    mov(rdx, a2);
+    mov(rax, 0x2000000 + nr);
     syscall();
-    return getreg(x0);
+    return getreg(rax);
 }
 
 fn wm_syscall3(nr: i64, a0: i32, a1: u64, a2: i32) -> u64 {
-    mov(x0, a0);
-    mov(x1, a1);
-    mov(x2, a2);
-    mov(x16, 0x2000000 + nr);
+    mov(rdi, a0);
+    mov(rsi, a1);
+    mov(rdx, a2);
+    mov(rax, 0x2000000 + nr);
     syscall();
-    return getreg(x0);
+    return getreg(rax);
 }
 
 // ---------------------------------------------------------------------------
@@ -62,8 +62,8 @@ fn wm_exe_default() -> str {
 // ---------------------------------------------------------------------------
 
 fn wm_unlink(path: str) -> void {
-    mov(x0, path);
-    mov(x16, 0x2000000 + 10);
+    mov(rdi, path);
+    mov(rax, 0x2000000 + 10);
     syscall();
 }
 
@@ -93,7 +93,7 @@ fn wm_sockaddr_un_make(path: str) -> str {
 
 fn wm_socket() -> i32 {
     wm_syscall3_i32(97, 1, 1, 0);  // AF_UNIX=1, SOCK_STREAM=1
-    return u64_to_i32(getreg(x0));
+    return u64_to_i32(getreg(rax));
 }
 
 fn wm_connect(sock_path: str) -> i32 {
@@ -101,11 +101,11 @@ fn wm_connect(sock_path: str) -> i32 {
     if (fd < 0) { return fd; }
 
     let addr: str = wm_sockaddr_un_make(sock_path);
-    mov(x9, addr);
-    let addr_ptr: u64 = getreg(x9);
+    mov(rcx, addr);
+    let addr_ptr: u64 = getreg(rcx);
 
     wm_syscall3(98, fd, addr_ptr, 106);  // SYS_connect
-    let irc: i32 = u64_to_i32(getreg(x0));
+    let irc: i32 = u64_to_i32(getreg(rax));
     if (irc != 0) {
         wm_syscall1_i32(6, fd);
         return -1;
@@ -123,10 +123,10 @@ fn wm_close(fd: i32) -> void {
 
 fn wm_send_line(fd: i32, line: str) -> i32 {
     let n: i32 = len(line);
-    mov(x9, line);
-    let p: u64 = getreg(x9);
+    mov(rcx, line);
+    let p: u64 = getreg(rcx);
     wm_syscall3(4, fd, p, n);
-    return u64_to_i32(getreg(x0));
+    return u64_to_i32(getreg(rax));
 }
 
 fn wm_escape_arg(arg: str) -> str {
@@ -195,10 +195,10 @@ fn wm_recv_line(fd: i32, buf_len: i32) -> str {
     let out: str = "";
     let pos: i32 = 0;
     while (pos < buf_len) {
-        mov(x9, buf);
-        let bptr: u64 = getreg(x9);
+        mov(rcx, buf);
+        let bptr: u64 = getreg(rcx);
         wm_syscall3(3, fd, bptr, 1);
-        let nread: i32 = u64_to_i32(getreg(x0));
+        let nread: i32 = u64_to_i32(getreg(rax));
         if (nread <= 0) { break; }
         if (buf[0] == '\n') { break; }
         if (buf[0] == '\r') {
@@ -220,10 +220,10 @@ fn wm_recv_ok(fd: i32) -> str {
 // ---------------------------------------------------------------------------
 
 fn wm_sleep_ms(ms: i32) -> void {
-    mov(x0, 0);
-    mov(x1, 0);
-    mov(x2, ms);
-    mov(x16, 0x2000000 + 230);  // SYS_poll
+    mov(rdi, 0);
+    mov(rsi, 0);
+    mov(rdx, ms);
+    mov(rax, 0x2000000 + 230);  // SYS_poll
     syscall();
 }
 

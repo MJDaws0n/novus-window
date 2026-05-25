@@ -1,0 +1,8 @@
+module window_windows;
+
+#if(arch == "amd64") {
+    import amd64;
+}
+#if(arch == "x86") {
+    import x86;
+}

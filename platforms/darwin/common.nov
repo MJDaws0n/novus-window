@@ -1,0 +1,9 @@
+// Auto-generated arch dispatcher for darwin.
+module window_darwin;
+
+#if(arch == "arm64") {
+    import arm64;
+}
+#if(arch == "amd64") {
+    import amd64;
+}
