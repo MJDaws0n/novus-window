@@ -1,6 +1,6 @@
 module window_tests_linux_amd64;
 
-import main;
+import ../main;
 
 fn test_pass(name: str) -> void {
     print_raw("  [PASS] " + name + "\n");

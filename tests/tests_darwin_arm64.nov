@@ -2,7 +2,7 @@
 
 module window_tests_darwin_arm64;
 
-import main;
+import ../main;
 
 fn test_pass(name: str) -> void {
     print_raw("  [PASS] " + name + "\n");

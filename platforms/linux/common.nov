@@ -1,0 +1,5 @@
+module window_linux;
+
+#if(arch == "amd64") {
+    import amd64;
+}

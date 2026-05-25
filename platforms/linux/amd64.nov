@@ -4,8 +4,6 @@
 
 module window_linux_amd64;
 
-import ../std;
-import ../env/main;
 
 fn to_u8(v: i32) -> i32 {
     return ((v % 256) + 256) % 256;

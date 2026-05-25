@@ -1,13 +1,9 @@
-// ---------------------------------------------------------------------------
-// window - native window helpers
-// macOS uses the existing WebKit helper; Linux/amd64 talks to X11 in-process.
-// ---------------------------------------------------------------------------
-
+// Auto-generated platform dispatcher.
 module window_main;
 
 #if(os == "darwin") {
-    import darwin_arm64;
+    import platforms/darwin/arm64;
 }
 #if(os == "linux") {
-    import linux_amd64;
+    import platforms/linux/common;
 }
